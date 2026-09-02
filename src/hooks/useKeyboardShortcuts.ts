@@ -17,6 +17,8 @@ interface ShortcutHandlers {
   toggleHelp: () => void;
   openFile: () => void;
   saveFile: () => void;
+  groupSelected?: () => void;
+  ungroupSelected?: () => void;
   isModalOpen?: boolean;
 }
 
@@ -36,6 +38,22 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
       const isCtrlOrMeta = e.ctrlKey || e.metaKey;
 
       if (isCtrlOrMeta) {
+        if (e.key.toLowerCase() === 'g') {
+          e.preventDefault();
+          if (e.shiftKey) {
+            handlers.ungroupSelected?.();
+          } else {
+            handlers.groupSelected?.();
+          }
+          return;
+        }
+
+        if (e.key.toLowerCase() === 'u') {
+          e.preventDefault();
+          handlers.ungroupSelected?.();
+          return;
+        }
+
         if (e.key.toLowerCase() === 'z') {
           e.preventDefault();
           if (e.shiftKey) {

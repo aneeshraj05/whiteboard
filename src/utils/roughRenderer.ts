@@ -1,7 +1,7 @@
 import rough from 'roughjs';
 import { getStroke } from 'perfect-freehand';
 import { WhiteboardElement, ResizeHandle, LaserPoint, Point, BackgroundPattern } from '../types/whiteboard';
-import { BoundingBox, getElementBounds, getResizeHandles, HANDLE_SIZE, getSmoothLassoPath } from './math';
+import { BoundingBox, getElementBounds, getResizeHandles, HANDLE_SIZE, getSmoothLassoPath, isConnectorType, getShapeAnchorPoints } from './math';
 
 // Cache loaded image elements
 const imageCache: Map<string, HTMLImageElement> = new Map();
@@ -121,6 +121,13 @@ export function renderElement(
   const ecx = ex + ew / 2;
   const ecy = ey + eh / 2;
 
+  // Apply rotation around element center
+  if (element.angle && !isConnectorType(element.type)) {
+    ctx.translate(ecx, ecy);
+    ctx.rotate(element.angle);
+    ctx.translate(-ecx, -ecy);
+  }
+
   function regularPolygon(n: number, offsetAngle = 0): [number, number][] {
     const rx = ew / 2;
     const ry = eh / 2;
@@ -147,8 +154,10 @@ export function renderElement(
     if (!element.text) return;
     const fontSize = element.fontSize || 16;
     const fontFamily = element.fontFamily || 'Inter';
+    const fontStyle = element.fontStyle || 'normal';
+    const fontWeight = element.fontWeight || 'normal';
     ctx.save();
-    ctx.font = `${fontSize}px "${fontFamily}", sans-serif`;
+    ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px "${fontFamily}", sans-serif`;
     ctx.fillStyle = element.strokeColor;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
@@ -234,7 +243,9 @@ export function renderElement(
       ctx.setLineDash([]); // Ensure no dashed state leaks into text rendering
       const fontSize = element.fontSize || 20;
       const fontFamily = element.fontFamily || 'Kalam';
-      ctx.font = `${fontSize}px "${fontFamily}", cursive, sans-serif`;
+      const fontStyle = element.fontStyle || 'normal';
+      const fontWeight = element.fontWeight || 'normal';
+      ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px "${fontFamily}", cursive, sans-serif`;
       ctx.fillStyle = element.strokeColor;
       ctx.textBaseline = 'top';
       ctx.textAlign = element.textAlign || 'left';
@@ -336,10 +347,13 @@ export function renderElement(
     }
 
     case 'elbow-connector': {
+      const fromX = element.x;
+      const fromY = element.y;
       const toX = element.x + element.width;
       const toY = element.y + element.height;
-      rc.linearPath([[element.x, element.y], [toX, element.y], [toX, toY]], options);
-      drawArrowHead(rc, toX, element.y, toX, toY, options);
+      const midX = fromX + (toX - fromX) / 2;
+      rc.linearPath([[fromX, fromY], [midX, fromY], [midX, toY], [toX, toY]], options);
+      drawArrowHead(rc, midX, toY, toX, toY, options);
       break;
     }
 
@@ -502,31 +516,76 @@ export function drawSelectionBox(
   ctx: CanvasRenderingContext2D,
   bounds: BoundingBox,
   zoom: number,
-  isSingle: boolean = true
+  singleElement?: WhiteboardElement
 ) {
   ctx.save();
-  ctx.strokeStyle = '#5b5fc7';
+
+  // If single connector element is selected, draw start/end endpoint handles
+  if (singleElement && isConnectorType(singleElement.type)) {
+    const startPt = { x: singleElement.x, y: singleElement.y };
+    const endPt = { x: singleElement.x + singleElement.width, y: singleElement.y + singleElement.height };
+    const handleR = (HANDLE_SIZE * 0.75) / zoom;
+
+    // Subtle connector bounding guide
+    ctx.strokeStyle = 'rgba(91, 95, 199, 0.35)';
+    ctx.lineWidth = 1 / zoom;
+    ctx.setLineDash([4 / zoom, 4 / zoom]);
+    ctx.strokeRect(bounds.minX, bounds.minY, bounds.width, bounds.height);
+    ctx.setLineDash([]);
+
+    // Start endpoint handle (open white ring with blue border)
+    ctx.beginPath();
+    ctx.arc(startPt.x, startPt.y, handleR, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#6366f1';
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.stroke();
+
+    // End endpoint handle (filled blue circle with white border)
+    ctx.beginPath();
+    ctx.arc(endPt.x, endPt.y, handleR, 0, Math.PI * 2);
+    ctx.fillStyle = '#6366f1';
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.stroke();
+
+    ctx.restore();
+    return;
+  }
+
+  const isRotated = singleElement && !!singleElement.angle;
+  const center = isRotated
+    ? { x: bounds.minX + bounds.width / 2, y: bounds.minY + bounds.height / 2 }
+    : undefined;
+
+  if (isRotated && center) {
+    ctx.translate(center.x, center.y);
+    ctx.rotate(singleElement.angle);
+    ctx.translate(-center.x, -center.y);
+  }
+
+  ctx.strokeStyle = '#c7d2fe'; // subtle purple/indigo border
   ctx.lineWidth = 1.5 / zoom;
-  ctx.setLineDash([6 / zoom, 6 / zoom]);
+  ctx.setLineDash([]);
 
   // Bounding outline
   ctx.strokeRect(bounds.minX, bounds.minY, bounds.width, bounds.height);
-  ctx.setLineDash([]);
 
-  // Draw 8 resize handles
+  // Draw 8 resize handles (Circular)
   const handles = getResizeHandles(bounds, zoom);
-  const handleSize = HANDLE_SIZE / zoom;
-  const halfHandle = handleSize / 2;
+  const handleRadius = (HANDLE_SIZE * 0.45) / zoom;
 
   ctx.fillStyle = '#ffffff';
-  ctx.strokeStyle = '#5b5fc7';
+  ctx.strokeStyle = '#6366f1';
   ctx.lineWidth = 1.5 / zoom;
 
   const handleKeys: (ResizeHandle)[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
   handleKeys.forEach((key) => {
     const pt = handles[key];
     ctx.beginPath();
-    ctx.rect(pt.x - halfHandle, pt.y - halfHandle, handleSize, handleSize);
+    ctx.arc(pt.x, pt.y, handleRadius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   });
@@ -538,14 +597,94 @@ export function drawSelectionBox(
   ctx.beginPath();
   ctx.moveTo(topCenter.x, topCenter.y);
   ctx.lineTo(rotPt.x, rotPt.y);
-  ctx.strokeStyle = '#5b5fc7';
+  ctx.strokeStyle = '#c7d2fe';
   ctx.stroke();
 
   ctx.beginPath();
-  ctx.arc(rotPt.x, rotPt.y, halfHandle * 1.1, 0, Math.PI * 2);
+  ctx.arc(rotPt.x, rotPt.y, handleRadius * 1.1, 0, Math.PI * 2);
   ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#6366f1';
   ctx.fill();
   ctx.stroke();
+
+  ctx.restore();
+}
+
+export function drawAnchorPoints(
+  ctx: CanvasRenderingContext2D,
+  elements: WhiteboardElement[],
+  hoveredAnchor: { elementId: string; anchor: string; point: Point } | undefined | null,
+  zoom: number
+) {
+  ctx.save();
+  for (const el of elements) {
+    if (isConnectorType(el.type) || el.type === 'draw') continue;
+    const anchors = getShapeAnchorPoints(el);
+    for (const a of anchors) {
+      const isHovered =
+        hoveredAnchor &&
+        hoveredAnchor.elementId === el.id &&
+        hoveredAnchor.anchor === a.anchor;
+
+      const r = (isHovered ? 6.5 : 4.5) / zoom;
+
+      if (isHovered) {
+        // Outer glow halo
+        ctx.beginPath();
+        ctx.arc(a.point.x, a.point.y, 11 / zoom, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(91, 95, 199, 0.25)';
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      ctx.arc(a.point.x, a.point.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = isHovered ? '#5b5fc7' : '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#5b5fc7';
+      ctx.lineWidth = (isHovered ? 2 : 1.5) / zoom;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+export function drawRotationBadge(
+  ctx: CanvasRenderingContext2D,
+  center: Point,
+  angle: number,
+  zoom: number
+) {
+  ctx.save();
+  let deg = Math.round((angle * 180) / Math.PI) % 360;
+  if (deg < 0) deg += 360;
+  const text = `${deg}°`;
+
+  ctx.font = `600 ${11 / zoom}px "Inter", sans-serif`;
+  const metrics = ctx.measureText(text);
+  const padX = 7 / zoom;
+  const padY = 4 / zoom;
+  const w = metrics.width + padX * 2;
+  const h = 18 / zoom;
+
+  const bx = center.x - w / 2;
+  const by = center.y - 42 / zoom;
+
+  ctx.fillStyle = '#1e1e24';
+  ctx.shadowColor = 'rgba(0,0,0,0.2)';
+  ctx.shadowBlur = 6 / zoom;
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(bx, by, w, h, 4 / zoom);
+  } else {
+    ctx.rect(bx, by, w, h);
+  }
+  ctx.fill();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowBlur = 0;
+  ctx.fillText(text, center.x, by + h / 2);
 
   ctx.restore();
 }
@@ -784,7 +923,7 @@ export function drawLaserTrail(
 ) {
   if (trail.length < 2) return;
   const now = Date.now();
-  const maxAge = 800; // ms
+  const maxAge = 2000; // ms (2 seconds persistence)
 
   // Filter to only visible points
   const visible = trail.filter((p) => now - p.time < maxAge);

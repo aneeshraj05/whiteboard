@@ -1,0 +1,1 @@
+let lastVersion = Date.now(); export const generateVersion = () => { const now = Date.now(); lastVersion = now <= lastVersion ? lastVersion + 1 : now; return lastVersion; };

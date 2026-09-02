@@ -70,11 +70,20 @@ export interface Point {
   pressure?: number;
 }
 
+export type AnchorPosition = 'top' | 'right' | 'bottom' | 'left';
+
+export interface PointBinding {
+  elementId: string;
+  anchor: AnchorPosition;
+}
+
 export type ResizeHandle = 
   | 'nw' | 'n' | 'ne'
   | 'w'         | 'e'
   | 'sw' | 's' | 'se'
-  | 'rotation';
+  | 'rotation'
+  | 'endpoint-start'
+  | 'endpoint-end';
 
 export interface WhiteboardElement {
   id: string;
@@ -96,10 +105,15 @@ export interface WhiteboardElement {
   text?: string;
   fontSize?: number;
   fontFamily?: FontFamily;
+  fontWeight?: 'normal' | 'bold' | '600' | '700';
+  fontStyle?: 'normal' | 'italic';
   textAlign?: TextAlign;
   imageDataUrl?: string;
   isLocked?: boolean;
   groupId?: string;
+  startBinding?: PointBinding; // bound to shape anchor
+  endBinding?: PointBinding;   // bound to shape anchor
+  blockData?: Record<string, any>; // Arbitrary data for blocks (e.g. calculator state, code snippet, checked status)
   createdAt: number;
   updatedAt: number;
 }
@@ -125,6 +139,8 @@ export interface DragState {
   currentX: number;
   currentY: number;
   activeHandle?: ResizeHandle;
+  activeEndpoint?: 'start' | 'end';
+  hoveredAnchor?: { elementId: string; anchor: AnchorPosition; point: Point };
   initialElementsSnapshot?: WhiteboardElement[];
   selectionBox?: { startX: number; startY: number; endX: number; endY: number };
   lassoPoints?: Point[];

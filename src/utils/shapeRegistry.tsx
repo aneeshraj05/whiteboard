@@ -1,3 +1,4 @@
+import React from 'react';
 import { ToolType } from '../types/whiteboard';
 
 export type ShapeCategory = 'basic' | 'flowchart' | 'diagram' | 'connectors';
@@ -7,7 +8,7 @@ export interface ShapeDefinition {
   label: string;
   category: ShapeCategory;
   /** Renders a tiny SVG icon (24×24 viewBox) */
-  icon: () => JSX.Element;
+  icon: () => React.JSX.Element;
 }
 
 // ─── SVG Icon helpers ─────────────────────────────────────────────────────────
@@ -24,7 +25,7 @@ const Poly = (points: string) => (
   </svg>
 );
 
-const Multi = (...children: JSX.Element[]) => (
+const Multi = (...children: React.JSX.Element[]) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
     {children}
   </svg>
