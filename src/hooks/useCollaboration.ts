@@ -17,7 +17,7 @@ import {
   ChatMessagePayload,
 } from '../types/collaboration';
 
-const SERVER_URL = import.meta.env.VITE_WS_SERVER_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : 'https://whiteboard-9m2z.onrender.com');
+const SERVER_URL = import.meta.env.VITE_WS_SERVER_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
 
 /** Throttle helper — returns a function that fires at most once per `ms` */
 function throttle<T extends (...args: any[]) => void>(fn: T, ms: number): T {

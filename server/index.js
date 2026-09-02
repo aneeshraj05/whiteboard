@@ -1,9 +1,23 @@
+const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
+const path = require('path');
+const fs = require('fs');
 
 const PORT = process.env.PORT || 3001;
 
-const httpServer = createServer();
+const app = express();
+const httpServer = createServer(app);
+
+// Serve static frontend files from 'dist' if they exist
+const distPath = path.join(__dirname, '../dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  // Catch-all route to serve index.html for client-side routing
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 const io = new Server(httpServer, {
   cors: {
