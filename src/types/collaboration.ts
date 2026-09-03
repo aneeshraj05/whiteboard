@@ -72,6 +72,7 @@ export interface ChatMessagePayload {
 export interface CollaborationState {
   isConnected: boolean;
   roomId: string | null;
+  mySocketId: string;
   myColor: string;
   myUsername: string;
   remoteUsers: CollabUser[];

@@ -90,6 +90,7 @@ export function DrawingMode() {
 
   const {
     isConnected,
+    mySocketId,
     myColor,
     myUsername,
     remoteUsers,
@@ -134,11 +135,6 @@ export function DrawingMode() {
     prevMsgCountRef.current = chatMessages.length;
   }, [chatMessages, isChatOpen]);
 
-  const socketIdRef = useRef<string>('');
-  useEffect(() => {
-    const mine = [...chatMessages].reverse().find((m) => !m.isSystem && m.username === (myUsername || 'You'));
-    if (mine) socketIdRef.current = mine.socketId;
-  }, [chatMessages, myUsername]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -670,7 +666,7 @@ export function DrawingMode() {
           isOpen={isChatOpen}
           onClose={() => { setIsChatOpen(false); }}
           messages={chatMessages}
-          mySocketId={socketIdRef.current}
+          mySocketId={mySocketId || 'local'}
           onSendMessage={broadcastChatMessage}
           isConnected={isConnected}
         />

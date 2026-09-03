@@ -49,6 +49,7 @@ export function useCollaboration({
 
   const socketRef = useRef<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [mySocketId, setMySocketId] = useState('');
   const [myColor, setMyColor] = useState('#6965db');
   const myColorRef = useRef('#6965db');
   const [myUsername] = useState(username ?? '');
@@ -75,6 +76,7 @@ export function useCollaboration({
     // ── Connection lifecycle ─────────────────────────────────────────────────
     socket.on('connect', () => {
       setIsConnected(true);
+      setMySocketId(socket.id ?? '');
       socket.emit('join-room', { roomId, username });
     });
 
@@ -137,6 +139,7 @@ export function useCollaboration({
       socket.disconnect();
       socketRef.current = null;
       setIsConnected(false);
+      setMySocketId('');
       setRemoteUsers([]);
       setRemoteCursors([]);
     };
@@ -145,8 +148,23 @@ export function useCollaboration({
 
   // ── Outbound emitters ─────────────────────────────────────────────────────
 
+  const pendingUpdatesRef = useRef<Map<string, WhiteboardElement>>(new Map());
+  const updateTimeoutRef = useRef<any>(null);
+
   const broadcastElementUpdate = useCallback((element: WhiteboardElement) => {
-    socketRef.current?.emit('element-update', { roomId, element });
+    pendingUpdatesRef.current.set(element.id, element);
+    if (!updateTimeoutRef.current) {
+      updateTimeoutRef.current = setTimeout(() => {
+        const socket = socketRef.current;
+        if (socket) {
+          pendingUpdatesRef.current.forEach((el) => {
+            socket.emit('element-update', { roomId, element: el });
+          });
+        }
+        pendingUpdatesRef.current.clear();
+        updateTimeoutRef.current = null;
+      }, 50); // Batch and throttle updates (approx 20fps)
+    }
   }, [roomId]);
 
   const broadcastElementDelete = useCallback((elementIds: string[]) => {
@@ -189,6 +207,7 @@ export function useCollaboration({
   return {
     isConnected,
     roomId,
+    mySocketId,
     myColor,
     myUsername,
     remoteUsers,

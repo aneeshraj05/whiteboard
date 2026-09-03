@@ -45,6 +45,7 @@ import {
   drawAnchorPoints,
   drawRotationBadge,
 } from '../utils/roughRenderer';
+
 interface WhiteboardCanvasProps {
   elements: WhiteboardElement[];
   setElements: (
@@ -103,25 +104,47 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const [dragState, setDragState] = useState<DragState>({
-    type: 'none',
-    startX: 0,
-    startY: 0,
-    currentX: 0,
-    currentY: 0,
-  });
+  // ── Refs for zero-React-overhead rendering ─────────────────────────────────
+  // All values the RAF loop needs are mirrored into refs so render()
+  // never has to be recreated by useCallback/useEffect.
+  const elementsRef = useRef<WhiteboardElement[]>(elements);
+  const selectedElementIdsRef = useRef<string[]>(selectedElementIds);
+  const zoomRef = useRef(zoom);
+  const scrollXRef = useRef(scrollX);
+  const scrollYRef = useRef(scrollY);
+  const themeRef = useRef(theme);
+  const canvasBackgroundRef = useRef(canvasBackground);
+  const backgroundPatternRef = useRef(backgroundPattern);
+  const activeToolRef = useRef(activeTool);
+  const editingTextIdRef = useRef<string | null>(null);
 
-  // Laser trail stored in a ref to avoid React re-render jank
+  // DragState fully in a ref — never causes React re-render
+  const dragStateRef = useRef<DragState>({ type: 'none', startX: 0, startY: 0, currentX: 0, currentY: 0 });
+
+  // Keep refs in sync with props/state
+  useEffect(() => { elementsRef.current = elements; scheduleRender(); }, [elements]);
+  useEffect(() => { selectedElementIdsRef.current = selectedElementIds; scheduleRender(); }, [selectedElementIds]);
+  useEffect(() => { zoomRef.current = zoom; scheduleRender(); }, [zoom]);
+  useEffect(() => { scrollXRef.current = scrollX; scheduleRender(); }, [scrollX]);
+  useEffect(() => { scrollYRef.current = scrollY; scheduleRender(); }, [scrollY]);
+  useEffect(() => { themeRef.current = theme; scheduleRender(); }, [theme]);
+  useEffect(() => { canvasBackgroundRef.current = canvasBackground; scheduleRender(); }, [canvasBackground]);
+  useEffect(() => { backgroundPatternRef.current = backgroundPattern; scheduleRender(); }, [backgroundPattern]);
+  useEffect(() => { activeToolRef.current = activeTool; scheduleRender(); }, [activeTool]);
+
+  // Laser trail stored in a ref — direct RAF loop writes here
   const laserTrailRef = useRef<LaserPoint[]>([]);
-  const [laserTrail, setLaserTrail] = useState<LaserPoint[]>([]);
   const laserRafRef = useRef<number | null>(null);
 
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [editingTextVal, setEditingTextVal] = useState<string>('');
   const [isSpacePressed, setIsSpacePressed] = useState<boolean>(false);
+  const isSpacePressedRef = useRef(false);
 
   // Auto focus textarea whenever entering edit mode
   useEffect(() => {
+    editingTextIdRef.current = editingTextId;
+    scheduleRender();
     if (editingTextId && textareaRef.current) {
       textareaRef.current.focus();
     }
@@ -134,12 +157,14 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         const target = e.target as HTMLElement;
         if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA') {
           setIsSpacePressed(true);
+          isSpacePressedRef.current = true;
         }
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
         setIsSpacePressed(false);
+        isSpacePressedRef.current = false;
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -152,8 +177,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
   // Commit text editing helper
   const handleCommitText = useCallback(() => {
-    if (!editingTextId) return;
-    const targetId = editingTextId;
+    const editingId = editingTextIdRef.current;
+    if (!editingId) return;
+    const targetId = editingId;
     const val = editingTextVal;
 
     if (!val || !val.trim()) {
@@ -181,14 +207,45 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     }
     setEditingTextId(null);
     setEditingTextVal('');
-  }, [editingTextId, editingTextVal, setElements, setSelectedElementIds]);
+  }, [editingTextVal, setElements, setSelectedElementIds]);
 
-  // Request Animation Frame Render Loop
-  const render = useCallback(() => {
+  // ── RAF-based render loop (no React dependency) ───────────────────────────
+  const rafIdRef = useRef<number | null>(null);
+  const needsRenderRef = useRef(false);
+
+  const scheduleRender = useCallback(() => {
+    needsRenderRef.current = true;
+    if (rafIdRef.current === null) {
+      rafIdRef.current = requestAnimationFrame(rafLoop);
+    }
+  }, []);
+
+  const rafLoop = useCallback(() => {
+    rafIdRef.current = null;
+    if (needsRenderRef.current) {
+      needsRenderRef.current = false;
+      renderFrame();
+    }
+  }, []);
+
+  const renderFrame = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    const elements = elementsRef.current;
+    const selectedElementIds = selectedElementIdsRef.current;
+    const zoom = zoomRef.current;
+    const scrollX = scrollXRef.current;
+    const scrollY = scrollYRef.current;
+    const theme = themeRef.current;
+    const canvasBackground = canvasBackgroundRef.current;
+    const backgroundPattern = backgroundPatternRef.current;
+    const activeTool = activeToolRef.current;
+    const editingTextId = editingTextIdRef.current;
+    const dragState = dragStateRef.current;
+    const laserTrail = laserTrailRef.current;
 
     const dpr = window.devicePixelRatio || 1;
     const width = canvas.clientWidth;
@@ -219,7 +276,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     // Draw Elements
     for (const element of elements) {
       if (element.id === editingTextId) continue;
-      renderElement(rc, ctx, element, () => render());
+      renderElement(rc, ctx, element, () => scheduleRender());
     }
 
     // Draw Anchor Snap Points when drawing/dragging a connector
@@ -264,26 +321,27 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     ctx.restore(); // Restore pan/zoom
     ctx.restore(); // Restore dpr
-  }, [
-    elements,
-    selectedElementIds,
-    zoom,
-    scrollX,
-    scrollY,
-    theme,
-    canvasBackground,
-    backgroundPattern,
-    dragState,
-    laserTrail,
-    editingTextId,
-    activeTool,
-  ]);
+  };
 
-  // Render loop — always runs once per frame when laser is active,
-  // driven by a persistent RAF that we manage via ref to avoid stale closures.
+  // Kick off the first render
   useEffect(() => {
-    render();
-  }, [render]);
+    scheduleRender();
+  }, []);
+
+  // Resize listener
+  useEffect(() => {
+    const handleResize = () => scheduleRender();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Cleanup RAF on unmount
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
+      if (laserRafRef.current !== null) cancelAnimationFrame(laserRafRef.current);
+    };
+  }, []);
 
   // Dedicated smooth laser RAF loop (independent of React render cycle)
   const startLaserLoop = useCallback(() => {
@@ -292,11 +350,12 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       const now = Date.now();
       const filtered = laserTrailRef.current.filter((p) => now - p.time < 2000);
       laserTrailRef.current = filtered;
-      setLaserTrail([...filtered]); // sync to state for render
+      scheduleRender();
       if (filtered.length > 0) {
         laserRafRef.current = requestAnimationFrame(loop);
       } else {
         laserRafRef.current = null;
+        scheduleRender();
       }
     };
     laserRafRef.current = requestAnimationFrame(loop);
@@ -309,44 +368,39 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     }
   }, []);
 
-  // Cleanup on unmount
-  useEffect(() => () => stopLaserLoop(), [stopLaserLoop]);
-
-  // Resize listener
-  useEffect(() => {
-    const handleResize = () => render();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [render]);
-
-  // Screen to world converter helper
+  // Screen to world converter helper — reads from refs to avoid closure staleness
   const getWorldCoords = (e: React.PointerEvent | React.MouseEvent): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
-    return screenToWorld(screenX, screenY, scrollX, scrollY, zoom);
+    return screenToWorld(screenX, screenY, scrollXRef.current, scrollYRef.current, zoomRef.current);
   };
 
   // POINTER DOWN
   const handlePointerDown = (e: React.PointerEvent) => {
+    const editingId = editingTextIdRef.current;
     // If text edit is active and the click didn't come from the textarea, commit
-    if (editingTextId) {
+    if (editingId) {
       const target = e.target as HTMLElement;
       if (target.tagName === 'TEXTAREA' || target.closest('[data-text-editor]')) return;
       handleCommitText();
     }
 
+    const elements = elementsRef.current;
+    const selectedElementIds = selectedElementIdsRef.current;
+    const activeTool = activeToolRef.current;
+
     // Pan with middle click, Space + drag, or Hand tool
-    if (e.button === 1 || isSpacePressed || activeTool === 'pan') {
-      setDragState({
+    if (e.button === 1 || isSpacePressedRef.current || activeTool === 'pan') {
+      dragStateRef.current = {
         type: 'panning',
         startX: e.clientX,
         startY: e.clientY,
         currentX: e.clientX,
         currentY: e.clientY,
-      });
+      };
       return;
     }
 
@@ -362,15 +416,14 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     if (activeTool === 'laser') {
       const firstPoint = { x: worldPt.x, y: worldPt.y, time: Date.now() };
       laserTrailRef.current = [firstPoint];
-      setLaserTrail([firstPoint]);
       startLaserLoop();
-      setDragState({
+      dragStateRef.current = {
         type: 'drawing',
         startX: worldPt.x,
         startY: worldPt.y,
         currentX: worldPt.x,
         currentY: worldPt.y,
-      });
+      };
       return;
     }
 
@@ -381,13 +434,13 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         setElements((prev) => syncBoundConnectors(prev.filter((el) => el.id !== hit.id)), true);
         setSelectedElementIds((prev) => prev.filter((id) => id !== hit.id));
       }
-      setDragState({
+      dragStateRef.current = {
         type: 'erasing',
         startX: worldPt.x,
         startY: worldPt.y,
         currentX: worldPt.x,
         currentY: worldPt.y,
-      });
+      };
       return;
     }
 
@@ -396,14 +449,14 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       if (!e.shiftKey) {
         setSelectedElementIds([]);
       }
-      setDragState({
+      dragStateRef.current = {
         type: 'lasso',
         startX: worldPt.x,
         startY: worldPt.y,
         currentX: worldPt.x,
         currentY: worldPt.y,
         lassoPoints: [worldPt],
-      });
+      };
       return;
     }
 
@@ -417,11 +470,11 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         if (bounds) {
           const center = singleEl ? getElementCenter(singleEl) : { x: bounds.minX + bounds.width / 2, y: bounds.minY + bounds.height / 2 };
           const angle = singleEl?.angle || 0;
-          const hitHandle = getHitHandle(worldPt.x, worldPt.y, bounds, zoom, angle, center, singleEl);
+          const hitHandle = getHitHandle(worldPt.x, worldPt.y, bounds, zoomRef.current, angle, center, singleEl);
 
           if (hitHandle) {
             if (hitHandle === 'endpoint-start' || hitHandle === 'endpoint-end') {
-              setDragState({
+              dragStateRef.current = {
                 type: 'resizing',
                 startX: worldPt.x,
                 startY: worldPt.y,
@@ -430,9 +483,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
                 activeHandle: hitHandle,
                 activeEndpoint: hitHandle === 'endpoint-start' ? 'start' : 'end',
                 initialElementsSnapshot: JSON.parse(JSON.stringify(elements)),
-              });
+              };
             } else if (hitHandle === 'rotation') {
-              setDragState({
+              dragStateRef.current = {
                 type: 'rotating',
                 startX: worldPt.x,
                 startY: worldPt.y,
@@ -440,9 +493,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
                 currentY: worldPt.y,
                 activeHandle: 'rotation',
                 initialElementsSnapshot: JSON.parse(JSON.stringify(elements)),
-              });
+              };
             } else {
-              setDragState({
+              dragStateRef.current = {
                 type: 'resizing',
                 startX: worldPt.x,
                 startY: worldPt.y,
@@ -450,7 +503,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
                 currentY: worldPt.y,
                 activeHandle: hitHandle,
                 initialElementsSnapshot: JSON.parse(JSON.stringify(elements)),
-              });
+              };
             }
             return;
           }
@@ -479,14 +532,14 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
           }
         }
 
-        setDragState({
+        dragStateRef.current = {
           type: 'moving',
           startX: worldPt.x,
           startY: worldPt.y,
           currentX: worldPt.x,
           currentY: worldPt.y,
           initialElementsSnapshot: JSON.parse(JSON.stringify(elements)),
-        });
+        };
         return;
       }
 
@@ -494,7 +547,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       if (!e.shiftKey) {
         setSelectedElementIds([]);
       }
-      setDragState({
+      dragStateRef.current = {
         type: 'selecting',
         startX: worldPt.x,
         startY: worldPt.y,
@@ -506,7 +559,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
           endX: worldPt.x,
           endY: worldPt.y,
         },
-      });
+      };
       return;
     }
 
@@ -527,7 +580,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         startBinding = { elementId: nearestAnchor.elementId, anchor: nearestAnchor.anchor };
       }
     }
-
 
     const newElement: WhiteboardElement = {
       id: newId,
@@ -560,45 +612,51 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     setElements((prev) => [...prev, newElement]);
     setSelectedElementIds([newId]);
 
-    setDragState({
+    dragStateRef.current = {
       type: 'drawing',
       startX: initialX,
       startY: initialY,
       currentX: initialX,
       currentY: initialY,
       hoveredAnchor: isLineConnector && startBinding ? { ...startBinding, point: { x: initialX, y: initialY } } : undefined,
-    });
+    };
   };
 
-  // POINTER MOVE
+  // POINTER MOVE — runs entirely on refs, zero React state updates during drag
   const handlePointerMove = (e: React.PointerEvent) => {
     const worldPt = getWorldCoords(e);
     if (onMouseMove) {
       onMouseMove(worldPt.x, worldPt.y);
     }
 
-    // 1. Panning
+    const dragState = dragStateRef.current;
+    const activeTool = activeToolRef.current;
+
+    // 1. Panning — update scrollX/Y directly via setters (these are batched by React 18)
     if (dragState.type === 'panning') {
       const dx = e.clientX - dragState.startX;
       const dy = e.clientY - dragState.startY;
-      setScrollX((prev) => prev + dx);
-      setScrollY((prev) => prev + dy);
-      setDragState((prev) => ({
-        ...prev,
-        startX: e.clientX,
-        startY: e.clientY,
-      }));
+      // Update refs immediately for RAF rendering
+      scrollXRef.current += dx;
+      scrollYRef.current += dy;
+      dragStateRef.current = { ...dragState, startX: e.clientX, startY: e.clientY };
+      // Sync React state for other components (deferred)
+      setScrollX(scrollXRef.current);
+      setScrollY(scrollYRef.current);
+      scheduleRender();
       return;
     }
 
-    // 2. Laser trail
+    // 2. Laser trail — pure ref write, no React state
     if (activeTool === 'laser' && dragState.type === 'drawing') {
       laserTrailRef.current = [...laserTrailRef.current, { x: worldPt.x, y: worldPt.y, time: Date.now() }];
+      scheduleRender();
       return;
     }
 
     // 3. Eraser drag
     if (dragState.type === 'erasing') {
+      const elements = elementsRef.current;
       const hit = elements.find((el) => isPointInsideElement(worldPt.x, worldPt.y, el));
       if (hit) {
         setElements((prev) => syncBoundConnectors(prev.filter((el) => el.id !== hit.id)));
@@ -610,13 +668,15 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     // 4. Smooth Lasso Selection drag
     if (dragState.type === 'lasso') {
       const nextLasso = [...(dragState.lassoPoints || []), worldPt];
-      setDragState((prev) => ({ ...prev, lassoPoints: nextLasso }));
+      dragStateRef.current = { ...dragState, lassoPoints: nextLasso };
 
+      const elements = elementsRef.current;
       const matchingIds = elements
         .filter((el) => isElementInsideLasso(el, nextLasso))
         .map((el) => el.id);
 
       setSelectedElementIds(matchingIds);
+      scheduleRender();
       return;
     }
 
@@ -628,22 +688,25 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         endX: worldPt.x,
         endY: worldPt.y,
       };
-      setDragState((prev) => ({ ...prev, selectionBox: box }));
+      dragStateRef.current = { ...dragState, selectionBox: box };
 
+      const elements = elementsRef.current;
       const matchingIds = elements
         .filter((el) => isElementIntersectingBox(el, box))
         .map((el) => el.id);
 
       setSelectedElementIds(matchingIds);
+      scheduleRender();
       return;
     }
 
-    // 6. Moving Selected Elements
+    // 6. Moving Selected Elements — update elements ref immediately, defer React state
     if (dragState.type === 'moving' && dragState.initialElementsSnapshot) {
       const dx = worldPt.x - dragState.startX;
       const dy = worldPt.y - dragState.startY;
 
       const initialMap = new Map(dragState.initialElementsSnapshot.map((el) => [el.id, el]));
+      const selectedElementIds = selectedElementIdsRef.current;
 
       setElements((prev) => {
         const moved = prev.map((el) => {
@@ -657,7 +720,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             updatedAt: generateVersion(),
           };
         });
-        // Dynamically sync attached connectors as shapes move
         return syncBoundConnectors(moved);
       });
       return;
@@ -665,6 +727,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     // 7. Rotating Elements
     if (dragState.type === 'rotating' && dragState.initialElementsSnapshot) {
+      const selectedElementIds = selectedElementIdsRef.current;
       const selectedSnapshot = dragState.initialElementsSnapshot.filter((el) => selectedElementIds.includes(el.id));
       if (selectedSnapshot.length === 0) return;
 
@@ -684,7 +747,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       if (e.shiftKey) {
         rawAngle = Math.round(rawAngle / snapStep) * snapStep;
       } else {
-        // Auto-snap near standard 0, 90, 180, 270 angles
         const nearestSnap = Math.round(rawAngle / snapStep) * snapStep;
         if (Math.abs(rawAngle - nearestSnap) < Math.PI / 60) {
           rawAngle = nearestSnap;
@@ -695,16 +757,11 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         setElements((prev) => {
           const rotated = prev.map((el) => {
             if (el.id !== singleEl.id) return el;
-            return {
-              ...el,
-              angle: rawAngle,
-              updatedAt: generateVersion(),
-            };
+            return { ...el, angle: rawAngle, updatedAt: generateVersion() };
           });
           return syncBoundConnectors(rotated);
         });
       } else {
-        // Multi-selection / group rotation around group collective center
         const startAngle = Math.atan2(dragState.startY - center.y, dragState.startX - center.x) + Math.PI / 2;
         let deltaAngle = rawAngle - startAngle;
         if (e.shiftKey) {
@@ -726,7 +783,8 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     // 8. Resizing Elements
     if (dragState.type === 'resizing' && dragState.activeHandle && dragState.initialElementsSnapshot) {
       const handle = dragState.activeHandle;
-      const initialMap = new Map(dragState.initialElementsSnapshot.map((el) => [el.id, el]));
+      const selectedElementIds = selectedElementIdsRef.current;
+      const elements = elementsRef.current;
       const selectedSnapshot = dragState.initialElementsSnapshot.filter((el) => selectedElementIds.includes(el.id));
 
       // 8a. Reconnecting / dragging endpoint of a connector
@@ -734,12 +792,11 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         const origConnector = selectedSnapshot[0];
         const isStart = dragState.activeEndpoint === 'start';
 
-        // Check for magnetic anchor snap
         const excludeShapeId = isStart ? origConnector.endBinding?.elementId : origConnector.startBinding?.elementId;
         const nearestAnchor = getNearestAnchor(worldPt, elements, excludeShapeId);
 
         const targetPt = nearestAnchor ? nearestAnchor.point : worldPt;
-        setDragState((prev) => ({ ...prev, hoveredAnchor: nearestAnchor || undefined }));
+        dragStateRef.current = { ...dragState, hoveredAnchor: nearestAnchor || undefined };
 
         setElements((prev) =>
           prev.map((el) => {
@@ -759,24 +816,18 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
               y: startY,
               width: newW,
               height: newH,
-              points: [
-                { x: 0, y: 0 },
-                { x: newW, y: newH },
-              ],
+              points: [{ x: 0, y: 0 }, { x: newW, y: newH }],
               startBinding: isStart
-                ? nearestAnchor
-                  ? { elementId: nearestAnchor.elementId, anchor: nearestAnchor.anchor }
-                  : undefined
+                ? nearestAnchor ? { elementId: nearestAnchor.elementId, anchor: nearestAnchor.anchor } : undefined
                 : el.startBinding,
               endBinding: !isStart
-                ? nearestAnchor
-                  ? { elementId: nearestAnchor.elementId, anchor: nearestAnchor.anchor }
-                  : undefined
+                ? nearestAnchor ? { elementId: nearestAnchor.elementId, anchor: nearestAnchor.anchor } : undefined
                 : el.endBinding,
               updatedAt: generateVersion(),
             };
           })
         );
+        scheduleRender();
         return;
       }
 
@@ -788,7 +839,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         let dx = worldPt.x - dragState.startX;
         let dy = worldPt.y - dragState.startY;
 
-        // If element is rotated, project delta into element's local coordinate frame
         if (orig.angle && !isConnectorType(orig.type)) {
           const cos = Math.cos(-orig.angle);
           const sin = Math.sin(-orig.angle);
@@ -805,14 +855,8 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
         if (handle.includes('e')) newW = orig.width + dx;
         if (handle.includes('s')) newH = orig.height + dy;
-        if (handle.includes('w')) {
-          newX = orig.x + dx;
-          newW = orig.width - dx;
-        }
-        if (handle.includes('n')) {
-          newY = orig.y + dy;
-          newH = orig.height - dy;
-        }
+        if (handle.includes('w')) { newX = orig.x + dx; newW = orig.width - dx; }
+        if (handle.includes('n')) { newY = orig.y + dy; newH = orig.height - dy; }
 
         // Shift: preserve aspect ratio for corner handles
         if (e.shiftKey && handle.length === 2 && orig.width !== 0 && orig.height !== 0) {
@@ -840,31 +884,17 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
           if (handle.includes('n')) newY = orig.y + orig.height - newH;
         }
 
-        // Scale points for draw elements
         let scaledPoints = orig.points;
         if (orig.type === 'draw' && orig.points && orig.points.length > 0 && orig.width !== 0 && orig.height !== 0) {
           const sx = newW / orig.width;
           const sy = newH / orig.height;
-          scaledPoints = orig.points.map((p) => ({
-            x: p.x * sx,
-            y: p.y * sy,
-            pressure: p.pressure,
-          }));
+          scaledPoints = orig.points.map((p) => ({ x: p.x * sx, y: p.y * sy, pressure: p.pressure }));
         }
 
         setElements((prev) => {
           const next = prev.map((el) => {
             if (el.id !== orig.id) return el;
-            return {
-              ...orig,
-              x: newX,
-              y: newY,
-              width: newW,
-              height: newH,
-              points: scaledPoints,
-              fontSize: newFontSize,
-              updatedAt: generateVersion(),
-            };
+            return { ...orig, x: newX, y: newY, width: newW, height: newH, points: scaledPoints, fontSize: newFontSize, updatedAt: generateVersion() };
           });
           return syncBoundConnectors(next);
         });
@@ -910,11 +940,11 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       }
     }
 
-    // 9. Drawing New Element
-    if (dragState.type === 'drawing' && selectedElementIds.length === 1) {
-      const currentId = selectedElementIds[0];
+    // 9. Drawing New Element — directly update elements ref for zero-latency preview
+    if (dragState.type === 'drawing' && selectedElementIdsRef.current.length === 1) {
+      const currentId = selectedElementIdsRef.current[0];
+      const elements = elementsRef.current;
 
-      // If drawing a connector, test for magnetic anchor snap on target shape
       let endX = worldPt.x;
       let endY = worldPt.y;
       let hoveredTarget: any = undefined;
@@ -927,7 +957,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
           endY = nearestAnchor.point.y;
           hoveredTarget = nearestAnchor;
         }
-        setDragState((prev) => ({ ...prev, hoveredAnchor: hoveredTarget }));
+        dragStateRef.current = { ...dragState, hoveredAnchor: hoveredTarget };
       }
 
       setElements((prev) =>
@@ -956,10 +986,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
               endBinding: hoveredTarget
                 ? { elementId: hoveredTarget.elementId, anchor: hoveredTarget.anchor }
                 : undefined,
-              points: [
-                { x: 0, y: 0 },
-                { x: w, y: h },
-              ],
+              points: [{ x: 0, y: 0 }, { x: w, y: h }],
               updatedAt: generateVersion(),
             };
           }
@@ -973,12 +1000,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             height = height >= 0 ? side : -side;
           }
 
-          return {
-            ...el,
-            width,
-            height,
-            updatedAt: generateVersion(),
-          };
+          return { ...el, width, height, updatedAt: generateVersion() };
         })
       );
     }
@@ -989,6 +1011,10 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     try {
       (e.target as Element).releasePointerCapture(e.pointerId);
     } catch {}
+
+    const dragState = dragStateRef.current;
+    const activeTool = activeToolRef.current;
+    const selectedElementIds = selectedElementIdsRef.current;
 
     if (dragState.type === 'drawing') {
       if (selectedElementIds.length === 1) {
@@ -1005,7 +1031,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
           const el = prev.find((item) => item.id === id);
           if (!el || el.type === 'text' || el.type === 'draw') return prev;
 
-          // Tap-to-place: tiny/zero-size shape → give it a default size
           if (Math.abs(el.width) < 3 && Math.abs(el.height) < 3) {
             return prev.map((item) => {
               if (item.id !== id) return item;
@@ -1016,7 +1041,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
             });
           }
 
-          // Normalize bounding box (flip negative width/height for drag-up or drag-left)
           if (boxShapes.has(el.type)) {
             const minX = Math.min(el.x, el.x + el.width);
             const minY = Math.min(el.y, el.y + el.height);
@@ -1047,6 +1071,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       setElements((prev) => syncBoundConnectors([...prev]), true);
     } else if (dragState.type === 'lasso') {
       if (dragState.lassoPoints && dragState.lassoPoints.length > 2) {
+        const elements = elementsRef.current;
         const matchingIds = elements
           .filter((el) => isElementInsideLasso(el, dragState.lassoPoints!))
           .map((el) => el.id);
@@ -1057,14 +1082,15 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       }
     }
 
-    setDragState({
+    dragStateRef.current = {
       type: 'none',
       startX: 0,
       startY: 0,
       currentX: 0,
       currentY: 0,
       hoveredAnchor: undefined,
-    });
+    };
+    scheduleRender();
   };
 
   // WHEEL (Zoom & Pan)
@@ -1073,7 +1099,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     if (e.ctrlKey || e.metaKey) {
       const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-      const newZoom = Math.min(Math.max(0.1, zoom * zoomFactor), 5.0);
+      const newZoom = Math.min(Math.max(0.1, zoomRef.current * zoomFactor), 5.0);
 
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -1081,22 +1107,28 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
 
-      const newScrollX = mouseX - (mouseX - scrollX) * (newZoom / zoom);
-      const newScrollY = mouseY - (mouseY - scrollY) * (newZoom / zoom);
+      const newScrollX = mouseX - (mouseX - scrollXRef.current) * (newZoom / zoomRef.current);
+      const newScrollY = mouseY - (mouseY - scrollYRef.current) * (newZoom / zoomRef.current);
 
+      zoomRef.current = newZoom;
+      scrollXRef.current = newScrollX;
+      scrollYRef.current = newScrollY;
       setZoom(newZoom);
       setScrollX(newScrollX);
       setScrollY(newScrollY);
     } else {
-      setScrollX((prev) => prev - e.deltaX);
-      setScrollY((prev) => prev - e.deltaY);
+      scrollXRef.current -= e.deltaX;
+      scrollYRef.current -= e.deltaY;
+      setScrollX(scrollXRef.current);
+      setScrollY(scrollYRef.current);
     }
+    scheduleRender();
   };
 
   // DOUBLE CLICK (Inline text edit)
   const handleDoubleClick = (e: React.MouseEvent) => {
+    const elements = elementsRef.current;
     const worldPt = getWorldCoords(e);
-    // Find any clicked element (top-most) to edit its text
     const hit = [...elements].reverse().find((el) => isPointInsideElement(worldPt.x, worldPt.y, el));
 
     if (hit && hit.type !== 'draw' && hit.type !== 'image' && !isConnectorType(hit.type)) {
@@ -1137,16 +1169,16 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
   // Cursor style based on active state
   const getCursor = () => {
-    if (isSpacePressed || activeTool === 'pan' || dragState.type === 'panning') {
-      return dragState.type === 'panning' ? 'grabbing' : 'grab';
+    if (isSpacePressed || activeTool === 'pan' || dragStateRef.current.type === 'panning') {
+      return dragStateRef.current.type === 'panning' ? 'grabbing' : 'grab';
     }
     if (activeTool === 'eraser') return 'crosshair';
     if (activeTool === 'laser') return 'crosshair';
     if (activeTool === 'lasso') return 'crosshair';
     if (activeTool === 'text') return 'text';
     if (activeTool !== 'selection') return 'crosshair';
-    if (dragState.activeHandle) {
-      const h = dragState.activeHandle;
+    if (dragStateRef.current.activeHandle) {
+      const h = dragStateRef.current.activeHandle;
       if (h === 'nw' || h === 'se') return 'nwse-resize';
       if (h === 'ne' || h === 'sw') return 'nesw-resize';
       if (h === 'n' || h === 's') return 'ns-resize';
@@ -1177,8 +1209,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         onPointerUp={handlePointerUp}
         onDoubleClick={handleDoubleClick}
       />
-
-
 
       {/* Floating Inline Textarea during Text Editing */}
       {editingElement && editingScreenPt && (
@@ -1272,4 +1302,3 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 };
 
 export default WhiteboardCanvas;
-
